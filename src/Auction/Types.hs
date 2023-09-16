@@ -149,7 +149,7 @@ data Auction a where
 
 data AuctionRequest
   = ViewAuctionItemReq
-  | RegissterUserReq NewUser
+  | RegisterUserReq NewUser
   | CheckUserReq UserId
   | RegisterItemReq UserId NewItem
   | BidReq UserId Price
