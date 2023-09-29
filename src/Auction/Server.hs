@@ -3,22 +3,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Auction.Server () where
+module Auction.Server (jsonServer, Port (..), auctionService, facilitator) where
 
 import Auction.Types
+import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Exception.Safe
 import Control.Lens ((&), (.~), (^.))
+import Control.Monad (void)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
 import qualified Data.HashMap.Strict as M
+import qualified Data.Text as T
 import Data.Time.Clock
 import Network.HTTP.Types (badRequest400)
 import qualified Web.Scotty as Scotty
 import Prelude hiding (id)
-import qualified Data.Text as T
-import Control.Concurrent
-import Control.Monad (void)
 
 newtype Port = Port Int deriving (Show)
 
@@ -45,7 +45,7 @@ auctionService auctionState (AuctionServerRequest request) =
         ViewAuctionItemReq -> do
           result <- evalAuction auctionState ViewAuctionItem
           return $ AuctionOk (ViewAuctionItemRes result)
-        RegissterUserReq newUser -> do
+        RegisterUserReq newUser -> do
           result <- evalAuction auctionState (RegisterUser newUser)
           return $ AuctionOk (RegisterUserRes result)
         CheckUserReq uid -> do
@@ -88,12 +88,16 @@ registerUser state user = atomically $ do
 
 checkInput :: AuctionRequest -> CheckResult
 checkInput ViewAuctionItemReq = Ok
-checkInput (RegissterUserReq user) = if not (null (user ^. name)) then Ok else Err "User name is required"
+checkInput (RegisterUserReq user) = if not (null (user ^. name)) then Ok else Err "User name is required"
 checkInput (CheckUserReq _uid) = Ok
 checkInput (RegisterItemReq _uid item) =
   if not (null (item ^. name)) && not (null (item ^. description))
     then Ok
     else Err "Item name and description should not be empty"
+checkInput (BidReq _uid price) =
+  if price > 0
+    then Ok
+    else Err "Bidding price must be positive"
 checkInput (SellToAuctionReq _uid _item term price) =
   if startTime term < endTime term
     then
@@ -194,27 +198,33 @@ handleFinishedAuctionItem queue state = do
     mAuctionItem <- tryReadTMVar (currentAuctionItem state)
     case mAuctionItem of
       Nothing -> writeTQueue queue "FACILITATOR: Auction doesn't hold"
-      Just auctionItem -> if currentTime < endTime (auctionItem ^. auctionTerm)
-        then writeTQueue queue "FACiLITATOR: Auction holds"
-        else do
-          void $ takeTMVar (currentAuctionItem state)
-          case auctionItem ^. currentUser of
-            Just tWinner -> do
-              updateUser tWinner
-                (\winner ->
-                  winner & inventory .~ addItem
-                             (winner ^. inventory)
-                             (auctionItem ^. auctionTargetItem)
-                         & money .~
-                             (winner ^. money) - (auctionItem ^. currentPrice))
-              let tSeller = auctionItem ^. seller
-              updateUser tSeller
-                (\sellUser ->
-                  sellUser & money .~
-                    (sellUser ^. money) + (auctionItem ^. currentPrice))
-              writeTQueue queue "FACILITATOR: Auction finished successfully"
-            Nothing -> do
-              let tSeller = auctionItem ^. seller
-              void $ addItemToUser tSeller (auctionItem ^. auctionTargetItem)
-              writeTQueue queue "FACILITATOR: Aucton fiinished with no bidder"
-
+      Just auctionItem ->
+        if currentTime < endTime (auctionItem ^. auctionTerm)
+          then writeTQueue queue "FACILITATOR: Auction holds"
+          else do
+            void $ takeTMVar (currentAuctionItem state)
+            case auctionItem ^. currentUser of
+              Just tWinner -> do
+                updateUser
+                  tWinner
+                  ( \winner ->
+                      winner
+                        & inventory
+                          .~ addItem
+                            (winner ^. inventory)
+                            (auctionItem ^. auctionTargetItem)
+                        & money
+                          .~ (winner ^. money) - (auctionItem ^. currentPrice)
+                  )
+                let tSeller = auctionItem ^. seller
+                updateUser
+                  tSeller
+                  ( \sellUser ->
+                      sellUser & money
+                        .~ (sellUser ^. money) + (auctionItem ^. currentPrice)
+                  )
+                writeTQueue queue "FACILITATOR: Auction finished successfully"
+              Nothing -> do
+                let tSeller = auctionItem ^. seller
+                void $ addItemToUser tSeller (auctionItem ^. auctionTargetItem)
+                writeTQueue queue "FACILITATOR: Aucton fiinished with no bidder"

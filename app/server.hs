@@ -21,7 +21,7 @@ main = do
   a1 <- async $ supervisor queue $ logWriter queue logfunc
   a2 <- async $ supervisor queue $ facilitator queue auctionState
 
-  let auctionServer = jsonServer (auctionService auctionState)
+  let auctionServer = jsonServer port (auctionService auctionState)
   supervisor queue auctionServer `finally` do
     putStrLn "Shutting down..."
     cancel a2
